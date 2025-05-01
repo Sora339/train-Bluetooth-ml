@@ -50,7 +50,7 @@ void updateAdvertisingData() {
   int16_t accelY = (int16_t)(sensorData.ay * 10000);
   int16_t accelZ = (int16_t)(sensorData.az * 10000);
 
-  uint8_t sensorDataBytes[12]; 
+  uint8_t sensorDataBytes[10]; 
   
   sensorDataBytes[0] = 0xAB;
   sensorDataBytes[1] = 0xCD;

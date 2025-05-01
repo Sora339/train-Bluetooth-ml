@@ -47,62 +47,100 @@ sensor_data_t sensorData;
 // アドバタイジングデータを更新する関数
 
 
+// updateAdvertisingData関数の修正版
 void updateAdvertisingData() {
-  Serial.print("sensorData.az: ");
-  Serial.println(sensorData.az, 6); 
-  digitalWrite(ledPin, !digitalRead(ledPin));
-
-  uint8_t sensorDataBytes[12];  // ← 12バイトに拡張
-  sensorDataBytes[0] = 0x01;
-
-  int16_t pressureData = (int16_t)(sensorData.pressure * 10000);
+  // センサーデータの詳細をダンプ
+  Serial.println("\n===== センサーデータの値とバイナリ表現 =====");
+  Serial.print("圧力(hPa): "); Serial.print(sensorData.pressure, 6);
+  
+  int16_t pressureData = (int16_t)(sensorData.pressure);
+  Serial.println(pressureData);
+  
+  Serial.print("加速度X: "); Serial.print(sensorData.ax, 6);
   int16_t accelX = (int16_t)(sensorData.ax * 10000);
+  Serial.print(" -> 変換値(x10000): "); Serial.println(accelX);
+  
+  Serial.print("加速度Y: "); Serial.print(sensorData.ay, 6);
   int16_t accelY = (int16_t)(sensorData.ay * 10000);
+  Serial.print(" -> 変換値(x10000): "); Serial.println(accelY);
+  
+  Serial.print("加速度Z: "); Serial.print(sensorData.az, 6);
   int16_t accelZ = (int16_t)(sensorData.az * 10000);
+  Serial.print(" -> 変換値(x10000): "); Serial.println(accelZ);
 
-  sensorDataBytes[1] = pressureData & 0xFF;
-  sensorDataBytes[2] = (pressureData >> 8) & 0xFF;
+  // ビット表現を出力
+  Serial.println("\n各値のバイト表現（リトルエンディアン）:");
+  Serial.print("圧力: 下位バイト=0x"); Serial.print(pressureData & 0xFF, HEX);
+  Serial.print(", 上位バイト=0x"); Serial.println((pressureData >> 8) & 0xFF, HEX);
+  
+  Serial.print("加速度X: 下位バイト=0x"); Serial.print(accelX & 0xFF, HEX);
+  Serial.print(", 上位バイト=0x"); Serial.println((accelX >> 8) & 0xFF, HEX);
+  
+  Serial.print("加速度Y: 下位バイト=0x"); Serial.print(accelY & 0xFF, HEX);
+  Serial.print(", 上位バイト=0x"); Serial.println((accelY >> 8) & 0xFF, HEX);
+  
+  Serial.print("加速度Z: 下位バイト=0x"); Serial.print(accelZ & 0xFF, HEX);
+  Serial.print(", 上位バイト=0x"); Serial.println((accelZ >> 8) & 0xFF, HEX);
 
-  sensorDataBytes[3] = accelX & 0xFF;
-  sensorDataBytes[4] = (accelX >> 8) & 0xFF;
+  // アドバタイズデータのバイト列を構築
+  // BLEライブラリによって会社IDが付加されるため注意が必要
+  uint8_t sensorDataBytes[10]; // 会社IDを考慮して12バイトに変更
+  
+  // パディングバイト
+  sensorDataBytes[0] = 0xAB;
+  sensorDataBytes[1] = 0xCD;
+  // 圧力データ - 最初の2バイトは会社IDで上書きされるため、
+  // [2]に圧力の下位バイトを入れる
+  sensorDataBytes[2] = pressureData & 0xFF;        // 圧力下位バイト
+  sensorDataBytes[3] = (pressureData >> 8) & 0xFF; // 圧力上位バイト
+  
+  // 加速度データ - 会社ID分のオフセットを考慮
+  sensorDataBytes[4] = accelX & 0xFF;
+  sensorDataBytes[5] = (accelX >> 8) & 0xFF;
+  
+  sensorDataBytes[6] = accelY & 0xFF;
+  sensorDataBytes[7] = (accelY >> 8) & 0xFF;
+  
+  sensorDataBytes[8] = accelZ & 0xFF;
+  sensorDataBytes[9] = (accelZ >> 8) & 0xFF;
 
-  sensorDataBytes[5] = accelY & 0xFF;
-  sensorDataBytes[6] = (accelY >> 8) & 0xFF;
-
-  sensorDataBytes[7] = accelZ & 0xFF;
-  sensorDataBytes[8] = (accelZ >> 8) & 0xFF;
-
-  // パディングバイト（ゴミ）：固定でも乱数でもOK
-  sensorDataBytes[9] = 0xAB;
-  sensorDataBytes[10] = 0xCD;
-  sensorDataBytes[11] = 0xEF;
-
-  // デバッグ出力
-  Serial.print("アドバタイズデータ: ");
-  for (int i = 0; i < 12; i++) {
+  // アドバタイズデータの内容を表示
+  Serial.print("\nアドバタイズデータ(16進数): ");
+  for (int i = 0; i < 10; i++) {
     Serial.printf("%02X ", sensorDataBytes[i]);
   }
   Serial.println();
-
-  // バイナリデータをStringに変換（文字列ではなくバイナリデータとして）
-  String manufacturerData;
-  manufacturerData.reserve(12); // 12バイト分の領域を確保
   
-  for (int i = 0; i < 12; i++) {
+  // 製造者データとしてBLEライブラリに渡す
+  String manufacturerData;
+  manufacturerData.reserve(10);
+  
+  for (int i = 0; i < 10; i++) {
     manufacturerData += (char)sensorDataBytes[i];
   }
   
-  // BLEライブラリにStringとして渡す
+  // BLEライブラリが内部でどのように処理するかを確認するためのデバッグ
+  Serial.println("\n製造者データをBLEライブラリに渡す前のバイナリダンプ:");
+  Serial.print("バイト長: "); Serial.println(manufacturerData.length());
+  Serial.print("バイト (16進数): ");
+  for (int i = 0; i < manufacturerData.length(); i++) {
+    Serial.printf("%02X ", (uint8_t)manufacturerData[i]);
+  }
+  Serial.println();
+  
+  // BLEAdvertisementDataオブジェクトを作成
   BLEAdvertisementData advData;
+  
+  // 会社IDを指定して製造者データをセット
   advData.setManufacturerData(manufacturerData);
+  
+  // アドバタイジングを開始
   pAdvertising->setAdvertisementData(advData);
   pAdvertising->start();
+  
+  // LEDを点滅
+  digitalWrite(ledPin, !digitalRead(ledPin));
 }
-
-
-
-
-
 
 void setup() {
   // シリアル通信の初期化
@@ -115,7 +153,7 @@ void setup() {
   
   // ESP32特有のピンでI2Cを初期化
   Wire.begin(SDA_PIN, SCL_PIN);
-  Wire.setClock(400000);  // 400kHz
+  Wire.setClock(400000);
   
   Serial.println("電源投入開始");
   delay(200);
@@ -162,8 +200,8 @@ void loop() {
     lastRead = millis();
     count++;
     
-    // 圧力センサーの読み取り
-    sensorData.pressure = readPressure() / 5000.0;
+    // 圧力センサーの読み取り（修正: PaからhPaへの変換を含める）
+    sensorData.pressure = readPressureHPa();
     
     // 加速度計の読み取り
     readAccel(&sensorData.ax, &sensorData.ay, &sensorData.az);
@@ -174,7 +212,7 @@ void loop() {
     // 定期的にデータを表示（5回に1回）
     if (count % 5 == 0) {
       Serial.print("T:"); Serial.print(millis());
-      Serial.print(" P:"); Serial.println(sensorData.pressure, 6);
+      Serial.print(" P:"); Serial.println(sensorData.pressure, 2);
       Serial.print("ジャイロ - X:"); Serial.print(sensorData.gx, 6);
       Serial.print(" Y:"); Serial.print(sensorData.gy, 6);
       Serial.print(" Z:"); Serial.println(sensorData.gz, 6);
@@ -189,6 +227,21 @@ void loop() {
   
   // CPU負荷軽減のための小さな遅延
   delay(10);
+}
+
+// writeRegister関数の追加
+void writeRegister(uint8_t addr, uint8_t reg, uint8_t value) {
+  Wire.beginTransmission(addr);
+  Wire.write(reg);
+  Wire.write(value);
+  byte error = Wire.endTransmission();
+  
+  if (error != 0) {
+    Serial.print("I2C書き込みエラー (0x");
+    Serial.print(addr, HEX);
+    Serial.print("): ");
+    Serial.println(error);
+  }
 }
 
 bool setupSensors() {
@@ -217,48 +270,46 @@ bool setupSensors() {
 void setupBLE() {
   // BLEデバイスの作成
   BLEDevice::init("PicoTest");
+  Serial.println("BLEデバイス初期化: PicoTest");
 
   // BLEサーバーの作成
   pServer = BLEDevice::createServer();
+  Serial.println("BLEサーバー作成");
 
   // BLEサービスの作成
   BLEService *pService = pServer->createService(SERVICE_UUID);
+  Serial.println("BLEサービス作成: " SERVICE_UUID);
 
-  // BLE特性の作成（接続時に使用するため）
+  // BLE特性の作成
   pCharacteristic = pService->createCharacteristic(
                       CHARACTERISTIC_UUID,
                       BLECharacteristic::PROPERTY_READ   |
                       BLECharacteristic::PROPERTY_NOTIFY
                     );
+  Serial.println("BLE特性作成: " CHARACTERISTIC_UUID);
 
   // サービスの開始
   pService->start();
+  Serial.println("BLEサービス開始");
 
   // アドバタイジングの設定
   pAdvertising = BLEDevice::getAdvertising();
   pAdvertising->addServiceUUID(SERVICE_UUID);
   pAdvertising->setScanResponse(false);
-  pAdvertising->setMinPreferred(0x06);  // iPhoneの接続問題を修正
+  pAdvertising->setMinPreferred(0x06);
+  
+  // IMPORTANT: 製造者IDを確認
+  Serial.println("\n重要な設定情報:");
+  Serial.print("製造者ID: 0x"); Serial.println(MANUFACTURER_ID, HEX);
+  Serial.print("サービスUUID: "); Serial.println(SERVICE_UUID);
   
   // アドバタイジング開始
   BLEDevice::startAdvertising();
-  Serial.println("BLEが'PicoTest'として初期化され、アドバタイズ中");
+  Serial.println("BLEアドバタイジング開始");
+  Serial.println("デバイス名: PicoTest");
 }
 
-void writeRegister(uint8_t addr, uint8_t reg, uint8_t value) {
-  Wire.beginTransmission(addr);
-  Wire.write(reg);
-  Wire.write(value);
-  byte error = Wire.endTransmission();
-  
-  if (error != 0) {
-    Serial.print("I2C書き込みエラー (0x");
-    Serial.print(addr, HEX);
-    Serial.print("): ");
-    Serial.println(error);
-  }
-}
-
+// 生のセンサーデータを読み取り
 uint32_t readPressure() {
   Wire.beginTransmission(PRESSURE_ADDRESS);
   Wire.write(PRESSURE_REG_POUT);
@@ -278,6 +329,22 @@ uint32_t readPressure() {
   uint32_t xlsb = Wire.read();
   
   return (msb << 16) | (lsb << 8) | xlsb;
+}
+
+// しまゆうへ:圧力の倍率調節よくわからんあとは頼んだ
+float readPressureHPa() {
+  uint32_t rawValue = readPressure();
+  
+  // センサーから取得した生の値をPaに変換（データシート: Pressure [Pa] = POUT[LSB] x 2）
+  float pressurePa = rawValue * 2.0;
+  
+  // PaからhPaに変換（1 hPa = 100 Pa）
+  float pressureHPa = pressurePa / 100.0;
+
+  //倍率調整
+  pressureHPa = pressureHPa / 10.0;
+  
+  return pressureHPa;
 }
 
 void readAccel(float *x, float *y, float *z) {
