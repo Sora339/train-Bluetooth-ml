@@ -87,64 +87,117 @@ def dump_bytes(data):
     """バイト列を16進数で表示"""
     return ' '.join([f"{b:02X}" for b in data])
 
-# アドバタイジングデータからセンサー値を解析
-def parse_manufacturer_data(manufacturer_data):
-    try:
-        # データが既にバイナリ形式の場合はそのまま使用
-        if isinstance(manufacturer_data, bytes):
-            raw_bytes = manufacturer_data
-        else:
-            # UTF-8文字列（16進表現）としてデコード
-            hex_str = manufacturer_data.decode('utf-8')
-            raw_bytes = binascii.unhexlify(hex_str)
-        
-        print(f"デコード成功（{len(raw_bytes)} bytes）: {dump_bytes(raw_bytes)}")
-
-        if len(raw_bytes) < 9:
-            print("加速度Z軸までのデータが不足しています")
-            return False
-
-        latest_data['P'] = int.from_bytes(raw_bytes[1:3], 'little', signed=True) / 10000.0 * 1000
-        latest_data['AX'] = int.from_bytes(raw_bytes[3:5], 'little', signed=True) / 10000.0
-        latest_data['AY'] = int.from_bytes(raw_bytes[5:7], 'little', signed=True) / 10000.0
-        latest_data['AZ'] = int.from_bytes(raw_bytes[7:9], 'little', signed=True) / 10000.0
-
-        latest_data['GX'] = latest_data['GY'] = latest_data['GZ'] = 0.0  # ジャイロは送ってない
-
-        print_data()
-        return True
-
-    except Exception as e:
-        print(f"データ解析エラー: {e}")
-        return False
-
-
-# アドバタイジングパケットの検出コールバック
+            
+# detection_callback関数を修正
 def detection_callback(device, advertisement_data):
     """BLEデバイス検出時のコールバック"""
     if device.name == DEVICE_NAME:
+        print(f"\n===== デバイス検出: {device.name} ({device.address}) =====")
+        print(f"RSSI: {device.rssi}dB")
+        
+        # アドバタイズデータの属性を直接参照（__dict__ではなく）
+        print("\n--- アドバタイズデータの属性 ---")
+        # 主要な属性のみチェック
+        for attr_name in ['manufacturer_data', 'service_data', 'service_uuids', 'local_name']:
+            attr_value = getattr(advertisement_data, attr_name, None)
+            if attr_value:
+                print(f"{attr_name}: {attr_value}")
+        
         # 製造者データがあるか確認
         manufacturer_data = advertisement_data.manufacturer_data
-        
         if manufacturer_data:
+            print("\n--- 製造者データの詳細 ---")
             for company_id, data in manufacturer_data.items():
-                print(f"受信データ: 会社ID={company_id}, データ長={len(data)}バイト, データ={dump_bytes(data)}")
-                # データを解析
-                if parse_manufacturer_data(data):
-                    # データを書き込み、表示を更新
+                print(f"会社ID: {company_id} (0x{company_id:04X})")
+                
+                # 統合した関数を呼び出し
+                if parse_sensor_data(data):
                     write_to_csv()
-                    print_data()
                     return
         
         # 通常のアドバタイズペイロードをチェック
         service_data = advertisement_data.service_data
         if service_data:
+            print("\n--- サービスデータの詳細 ---")
             for uuid, data in service_data.items():
-                print(f"サービスデータ: UUID={uuid}, データ長={len(data)}バイト, データ={dump_bytes(data)}")
-                if parse_manufacturer_data(data):
+                print(f"UUID: {uuid}")
+                
+                # 統合した関数を呼び出し
+                if parse_sensor_data(data):
                     write_to_csv()
-                    print_data()
                     return
+
+# デバイスからのデータを解析・表示する統合関数
+def parse_sensor_data(raw_bytes):
+    """センサーデータを解析して表示する統合関数"""
+    print("\n--- センサーデータの解析 ---")
+    
+    # データの基本情報を表示
+    print(f"データ長: {len(raw_bytes)}バイト")
+    print(f"データ (Hex): {dump_bytes(raw_bytes)}")
+    
+    # バイト列の二進数表現
+    binary_repr = ' '.join([f'{b:08b}' for b in raw_bytes])
+    print(f"データ (バイナリ): {binary_repr}")
+    
+    # バイト列の長さをチェック
+    if len(raw_bytes) < 8:
+        print("データが不十分: 少なくとも8バイト必要（圧力+3軸加速度）")
+        return False
+    
+    try:
+        # 2バイトずつのデータを解析（詳細表示）
+        print("\n位置 | バイト1 | バイト2 | リトルE整数 | ビッグE整数 | リトルE浮動小数点 | ビッグE浮動小数点")
+        print("-----|--------|--------|------------|------------|-----------------|---------------")
+        
+        pairs = []
+        for i in range(0, len(raw_bytes)-1, 2):
+            if i+1 < len(raw_bytes):
+                # リトルエンディアンとビッグエンディアンの両方で解析
+                little_endian = int.from_bytes(raw_bytes[i:i+2], 'little', signed=True)
+                big_endian = int.from_bytes(raw_bytes[i:i+2], 'big', signed=True)
+                
+                # 10000で割った値（浮動小数点）
+                little_float = little_endian / 10000.0
+                big_float = big_endian / 10000.0
+                
+                pairs.append((i, raw_bytes[i], raw_bytes[i+1], 
+                             little_endian, big_endian, 
+                             little_float, big_float))
+                
+                print(f"{i:4d} | 0x{raw_bytes[i]:02X}   | 0x{raw_bytes[i+1]:02X}   | {little_endian:10d} | {big_endian:10d} | {little_float:16.6f} | {big_float:16.6f}")
+        
+        # センサー値の解析と更新
+        latest_data['P'] = int.from_bytes(raw_bytes[0:2], 'little', signed=True) / 10000.0 * 1000
+        latest_data['AX'] = int.from_bytes(raw_bytes[2:4], 'little', signed=True) / 10000.0
+        latest_data['AY'] = int.from_bytes(raw_bytes[4:6], 'little', signed=True) / 10000.0
+        latest_data['AZ'] = int.from_bytes(raw_bytes[6:8], 'little', signed=True) / 10000.0
+        
+        # ジャイロデータがある場合（オプション）
+        if len(raw_bytes) >= 14:
+            latest_data['GX'] = int.from_bytes(raw_bytes[8:10], 'little', signed=True) / 10000.0
+            latest_data['GY'] = int.from_bytes(raw_bytes[10:12], 'little', signed=True) / 10000.0
+            latest_data['GZ'] = int.from_bytes(raw_bytes[12:14], 'little', signed=True) / 10000.0
+        
+        # 解析結果のサマリーを表示
+        print("\n--- 解析結果 ---")
+        print(f"圧力 (hPa): {latest_data['P']}")
+        print(f"加速度 X: {latest_data['AX']}")
+        print(f"加速度 Y: {latest_data['AY']}")
+        print(f"加速度 Z: {latest_data['AZ']}")
+        
+        if len(raw_bytes) >= 14:
+            print(f"ジャイロ X (°/s): {latest_data['GX']}")
+            print(f"ジャイロ Y (°/s): {latest_data['GY']}")
+            print(f"ジャイロ Z (°/s): {latest_data['GZ']}")
+        
+        # センサーデータの整形表示
+        print_data()
+        return True
+        
+    except Exception as e:
+        print(f"データ解析エラー: {e}")
+        return False
 
 # メイン関数
 async def main():
