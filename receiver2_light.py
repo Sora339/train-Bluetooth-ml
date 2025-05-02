@@ -107,7 +107,7 @@ async def process_data():
                 os.fsync(csv_file.fileno())
         
         # 短い待機でCPU使用率を抑える
-        await asyncio.sleep(1)  # 1sの待機
+        await asyncio.sleep(3)  # 1sの待機
 
 # メイン関数
 async def main():
