@@ -34,6 +34,8 @@ BLEServer* pServer = NULL;
 BLECharacteristic* pCharacteristic = NULL;
 BLEAdvertising* pAdvertising = NULL;
 const int ledPin = 2;  // ESP32の内蔵LED
+unsigned long lastSendTime = 0;  // 最後の送信時刻
+const unsigned long SEND_INTERVAL = 100;  // 10Hz = 100ms
 
 // センサーデータ構造体
 typedef struct {
@@ -66,9 +68,15 @@ void updateAdvertisingData() {
   sensorDataBytes[8] = accelZ & 0xFF;
   sensorDataBytes[9] = (accelZ >> 8) & 0xFF;
   
+  // Arduino String型を使用
   String manufacturerData;
-  manufacturerData.reserve(10);
   
+  // 製造者IDを追加（必要な場合）
+  uint8_t mfrIdBytes[2];
+  mfrIdBytes[0] = MANUFACTURER_ID & 0xFF;
+  mfrIdBytes[1] = (MANUFACTURER_ID >> 8) & 0xFF;
+  
+  // センサーデータをStringに変換して追加
   for (int i = 0; i < 10; i++) {
     manufacturerData += (char)sensorDataBytes[i];
   }
@@ -77,6 +85,8 @@ void updateAdvertisingData() {
   advData.setManufacturerData(manufacturerData);
   
   pAdvertising->setAdvertisementData(advData);
+  
+  // 広告を確実に開始
   pAdvertising->start();
   
   digitalWrite(ledPin, !digitalRead(ledPin));
@@ -102,15 +112,24 @@ void setup() {
 }
 
 void loop() {
-  static unsigned long lastRead = 0;
+  unsigned long currentTime = millis();
   
-  if (millis() - lastRead >= 100) {  // 10Hzの更新レート
-    lastRead = millis();
+  // 正確に10Hzのタイミングで送信
+  if (currentTime - lastSendTime >= SEND_INTERVAL) {
+    // 次の送信時刻を計算（誤差を蓄積させない）
+    lastSendTime += SEND_INTERVAL;
     
+    // タイミング逆転の防止
+    if (currentTime > lastSendTime + SEND_INTERVAL) {
+      lastSendTime = currentTime;
+    }
+    
+    // センサーデータ読み取り
     sensorData.pressure = readPressureHPa();
     readAccel(&sensorData.ax, &sensorData.ay, &sensorData.az);
     readGyro(&sensorData.gx, &sensorData.gy, &sensorData.gz);
     
+    // アドバタイジングデータを更新
     updateAdvertisingData();
   }
 }
