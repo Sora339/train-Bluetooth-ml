@@ -51,10 +51,10 @@ def detection_callback(device, advertisement_data):
             
         try:
             # センサーデータの解析
-            pressure = int.from_bytes(data[0:2], 'little', signed=True) / 10000.0 * 1000
-            accel_x = int.from_bytes(data[2:4], 'little', signed=True) / 10000.0
-            accel_y = int.from_bytes(data[4:6], 'little', signed=True) / 10000.0
-            accel_z = int.from_bytes(data[6:8], 'little', signed=True) / 10000.0
+            pressure = int.from_bytes(data[0:2], 'little', signed=True) / 10
+            accel_x = int.from_bytes(data[2:4], 'little', signed=True) / 10000
+            accel_y = int.from_bytes(data[4:6], 'little', signed=True) / 10000
+            accel_z = int.from_bytes(data[6:8], 'little', signed=True) / 10000
             
             # バッファにデータを追加 (処理を分離)
             data_buffer.append((timestamp, pressure, accel_x, accel_y, accel_z))
