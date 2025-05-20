@@ -71,11 +71,6 @@ void updateAdvertisingData() {
   // Arduino String型を使用
   String manufacturerData;
   
-  // 製造者IDを追加（必要な場合）
-  uint8_t mfrIdBytes[2];
-  mfrIdBytes[0] = MANUFACTURER_ID & 0xFF;
-  mfrIdBytes[1] = (MANUFACTURER_ID >> 8) & 0xFF;
-  
   // センサーデータをStringに変換して追加
   for (int i = 0; i < 10; i++) {
     manufacturerData += (char)sensorDataBytes[i];
