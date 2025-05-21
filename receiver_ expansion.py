@@ -2,7 +2,7 @@ import asyncio
 import datetime
 import csv
 import os
-from bleak import BleakScanner, BleakClient
+from bleak import BleakScanner
 from collections import deque
 import time
 import logging
@@ -25,18 +25,12 @@ csv_writer = None
 data_count = 0
 last_status_time = time.time()
 
-# データ構造設定 - レガシーアドバタイズ対応
+# データ構造設定
 PACKET_ID_INDEX = 0     # パケットIDの位置（0から始まる、3バイト目）
 DATA_START_INDEX = 1    # データの開始位置（パケットIDの後）
 BYTES_PER_RECORD = 8    # 各データレコードのバイト数
-MAX_DATA_ENTRIES = 3    # パケットあたりの最大データエントリ数（レガシー）
+MAX_DATA_ENTRIES = 8    # パケットあたりの最大データエントリ数（拡張）
 TIMEDIFF_START_INDEX = 3 + (MAX_DATA_ENTRIES * BYTES_PER_RECORD)  # 時間差情報の開始位置
-
-# 製造者ID (実際に使われているID)
-MANUFACTURER_ID = 0xCDCB  # 製造者ID (52651)
-
-# デバイス情報を保持する辞書
-found_devices = {}
 
 # データ処理用のバッファ
 unique_data_buffer = {}  # 重複を排除したデータバッファ
@@ -53,12 +47,7 @@ def init_csv():
 
 # デバイス検出時のコールバック関数
 def detection_callback(device, advertisement_data):
-    global unique_data_buffer, processed_data_queue, found_devices
-    
-    # デバイスログ
-    if device.name and device.name not in found_devices:
-        logger.info(f"デバイスを発見: {device.name} ({device.address})")
-        found_devices[device.name] = device.address
+    global unique_data_buffer, processed_data_queue
     
     # PicoTestデバイスのみを処理
     if device.name == DEVICE_NAME:
@@ -67,18 +56,12 @@ def detection_callback(device, advertisement_data):
         if not manufacturer_data:
             return
         
-        # 製造者データの内容をログ（最初の検出時のみ）
+        # 製造者データの内容をログ
         for company_id, data in manufacturer_data.items():
-            # 最初の検出時のみデータ構造をログ
-            if company_id not in unique_data_buffer:
-                logger.info(f"製造者ID: 0x{company_id:04X}, データ長: {len(data)}バイト")
-                if debugMode:
-                    hex_str = ' '.join([f'{b:02X}' for b in data])
-                    logger.debug(f"HEX: {hex_str}")
-            
-            # データが小さすぎる場合はスキップ
-            min_size = 4  # パケットIDとデータ1セットの最小サイズ
+            # データ長のチェック（最小サイズの確認）
+            min_size = TIMEDIFF_START_INDEX + 1
             if len(data) < min_size:
+                logger.warning(f"データサイズが小さすぎます: {len(data)} バイト")
                 continue
                 
             try:
@@ -88,12 +71,9 @@ def detection_callback(device, advertisement_data):
                 # パケットIDを取得（3バイト目）
                 packet_id = data[PACKET_ID_INDEX]
                 
-                # 実際のデータエントリ数を計算
-                actual_entries = min((len(data) - 3) // BYTES_PER_RECORD, MAX_DATA_ENTRIES)
-                
                 # 時間差情報を抽出
                 time_diffs = []
-                for i in range(actual_entries - 1):
+                for i in range(MAX_DATA_ENTRIES - 1):
                     diff_index = TIMEDIFF_START_INDEX + i
                     if diff_index < len(data):
                         time_diff = data[diff_index] * 4 if data[diff_index] != 0xFF else 0
@@ -120,16 +100,16 @@ def detection_callback(device, advertisement_data):
                     current_ts = prev_ts
                 
                 # タイムスタンプリストを確認
-                if len(data_timestamps) != actual_entries:
+                if len(data_timestamps) != MAX_DATA_ENTRIES:
                     # 配列を正しいサイズに調整
-                    while len(data_timestamps) < actual_entries:
+                    while len(data_timestamps) < MAX_DATA_ENTRIES:
                         data_timestamps.append(data_timestamps[-1])
                 
                 # 各データエントリを解析
                 entries = []
                 
                 # データエントリを解析（3バイト目以降のデータ）
-                for i in range(actual_entries):
+                for i in range(MAX_DATA_ENTRIES):
                     offset = DATA_START_INDEX + (i * BYTES_PER_RECORD)
                     
                     # データ範囲のチェック
@@ -206,10 +186,6 @@ async def process_data():
                     csv_file.flush()
                 
                 last_status_time = current_time
-                
-                # 発見済みデバイスのリスト表示
-                if found_devices and len(found_devices) > 0:
-                    logger.info(f"発見済みデバイス: {', '.join(found_devices.keys())}")
         
         except Exception as e:
             logger.error(f"データ処理エラー: {e}")
@@ -231,7 +207,7 @@ def save_processed_data():
         saved_count += 1
         
         # 表示を大幅に間引く（100件ごとに1回）
-        if data_count % 100 == 0 or data_count == 1:
+        if data_count % 100 == 0:
             time_str = timestamp.strftime('%H:%M:%S.%f')[:-3]
             logger.info(f"#{data_count} [{time_str}] ID:{packet_id} P:{pressure:.1f}hPa, A:({accel_x:.3f},{accel_y:.3f},{accel_z:.3f})")
         
@@ -240,114 +216,74 @@ def save_processed_data():
             timestamp_str = timestamp.strftime('%Y-%m-%d %H:%M:%S.%f')
             csv_writer.writerow([timestamp_str, packet_id, pressure, accel_x, accel_y, accel_z])
 
-# すべてのBLEデバイスをスキャンする関数
-async def scan_for_devices(timeout=10.0):
-    """指定された時間だけBLEデバイスをスキャンし、結果を返す"""
-    logger.info(f"{timeout}秒間スキャン中...")
-    devices = await BleakScanner.discover(timeout=timeout)
-    return devices
-
-# macOS用の補助関数
-async def connect_to_device(address, callback):
-    """デバイスへの接続とコールバック設定"""
-    try:
-        client = BleakClient(address)
-        await client.connect()
-        logger.info(f"デバイス {address} に接続しました")
-        return client
-    except Exception as e:
-        logger.error(f"接続エラー: {e}")
-        return None
-
-# BLEスキャナーをセットアップ
-async def setup_scanner():
-    """プラットフォーム対応のBLEスキャナーをセットアップ"""
-    global debugMode
-    
-    # デバッグモード
-    debugMode = False
-    
+# BLE 5の拡張アドバタイズメントをスキャンするための設定
+async def setup_ble5_scanner():
     # プラットフォームを確認
     system = platform.system()
     logger.info(f"実行環境: {system}")
     
-    # スキャンモード - アクティブモードを使用
-    scan_mode = "active"
-    
-    # スキャナーを作成
+    # BLE 5の拡張アドバタイズメントとコーディングPHYをサポートするためのスキャン設定
     scanner = BleakScanner(
         detection_callback=detection_callback,
-        scanning_mode=scan_mode
+        scanning_mode="active",  # アクティブスキャンを有効化
     )
     
     # プラットフォーム固有の設定
     try:
         if system == "Linux":
-            # LinuxではBlueZを使用
-            logger.info("Linux環境でスキャン設定を適用します")
-            # 一部のLinuxでは特別な設定が必要な場合がある
-            
+            # BlueZバックエンド（Linux）での拡張設定 - 適切なメソッドチェック
+            if hasattr(scanner, "set_scanning_filter"):
+                scanner.set_scanning_filter("Transport", "le")  # BLE専用
+                scanner.set_scanning_filter("DuplicateData", False)  # 重複データを受信
+                scanner.set_scanning_filter("PHY", "coded")  # コーディングPHY (S=8) を使用
+                logger.info("Linux環境でコーディングPHY設定を有効化しました")
+                
         elif system == "Windows":
-            # Windowsでは.NETベースのBluetoothLEを使用
-            logger.info("Windows環境でスキャン設定を適用します")
-            # Windowsではデフォルトで重複パケットをフィルタリングするので無効にする
-            
+            # Windows 10/11の場合の特別な設定
+            if hasattr(scanner, "_backend") and hasattr(scanner._backend, "_adapter"):
+                adapter = scanner._backend._adapter
+                if hasattr(adapter, "SetLEScanFilterPolicy"):
+                    # Windowsでの拡張設定
+                    adapter.SetLEScanFilterPolicy(0)  # すべてのアドバタイズを受信
+                    
+                    # コーディングPHYをサポートする場合の設定
+                    if hasattr(adapter, "SetScanningPHY"):
+                        adapter.SetScanningPHY(0x03)  # 1M PHYとコーディングPHYの両方を有効化
+                        logger.info("Windows環境でコーディングPHY設定を有効化しました")
+                    
         elif system == "Darwin":  # macOS
-            # macOSではCore Bluetoothを使用
-            logger.info("macOS環境でスキャン設定を適用します")
-            # macOSでは特別な設定は通常不要
-    
+            # macOSでは現在、BLE 5拡張機能のネイティブサポートが限られている
+            logger.info("macOS環境では拡張スキャン設定が限定されている場合があります")
+            # macOSではBleakの現在のバージョンで直接拡張スキャンを設定する方法はないが、
+            # スキャン自体は動作する
     except Exception as e:
-        logger.warning(f"プラットフォーム固有の設定中にエラー: {e}")
+        logger.warning(f"BLE 5スキャン設定中にエラーが発生しました: {e}")
+        logger.info("標準設定でスキャンを続行します")
     
     return scanner
 
 # メイン関数
 async def main():
-    global data_count
-    
     scanner = None
     try:
         # CSVファイルを初期化
         if SAVE_TO_CSV:
             init_csv()
         
-        logger.info(f"{DEVICE_NAME}スキャン中... Ctrl+Cで終了")
+        logger.info(f"{DEVICE_NAME}スキャン中... BLE 5の拡張アドバタイズメントに対応。Ctrl+Cで終了")
         
-        # スキャナーのセットアップ
-        scanner = await setup_scanner()
+        # BLE 5対応のスキャナーを設定
+        scanner = await setup_ble5_scanner()
         
         # データ処理タスクを開始
         processing_task = asyncio.create_task(process_data())
         
         # スキャンを開始
         await scanner.start()
-        logger.info("スキャンを開始しました")
-        
-        # 最初は1分間だけ全デバイスをスキャン
-        if len(found_devices) == 0:
-            logger.info("最初の30秒間はすべてのBLEデバイスを検索します...")
-            await asyncio.sleep(30)
+        logger.info("BLE 5拡張アドバタイズメントスキャンを開始しました")
         
         # メインループを維持
         while True:
-            # 定期的にスキャンステータスを確認
-            if len(found_devices) == 0 and data_count == 0:
-                # デバイスが見つからない場合は全デバイススキャンを実行
-                logger.info("デバイスが見つかりません。すべてのBLEデバイスをスキャンします...")
-                devices = await scan_for_devices(timeout=5.0)
-                logger.info(f"{len(devices)}個のBLEデバイスを検出しました")
-                
-                for device in devices:
-                    if device.name:
-                        logger.info(f"  - {device.name} ({device.address})")
-                        # macOSの場合は明示的に接続を試みる
-                        if platform.system() == "Darwin" and device.name == DEVICE_NAME:
-                            client = await connect_to_device(device.address, detection_callback)
-                            if client:
-                                logger.info(f"{device.name}に接続しました")
-            
-            # 通常の待機
             await asyncio.sleep(1)
             
     except KeyboardInterrupt:
