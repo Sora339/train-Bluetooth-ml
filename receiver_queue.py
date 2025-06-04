@@ -11,8 +11,8 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# デバイス名
-DEVICE_NAME = "PicoTest"
+# 製造者ID（0xCDCB = 52651）
+MANUFACTURER_ID = 0xCDCB
 
 # データをCSVに保存するための設定
 CSV_FILENAME = f"{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}_sensor_data.csv"
@@ -49,93 +49,96 @@ def init_csv():
 def detection_callback(device, advertisement_data):
     global unique_data_buffer, processed_data_queue
     
-    # PicoTestデバイスのみを処理
-    if device.name == DEVICE_NAME:
-        # 製造者データを確認
-        manufacturer_data = advertisement_data.manufacturer_data
-        if not manufacturer_data:
-            return
+    # 製造者データを確認
+    manufacturer_data = advertisement_data.manufacturer_data
+    if not manufacturer_data:
+        return
+    
+    # 指定の製造者ID（0xCDCB）を持つデバイスのみを処理
+    if MANUFACTURER_ID not in manufacturer_data:
+        return
+    
+    data = manufacturer_data[MANUFACTURER_ID]
+    
+    # データ長のチェック（27バイト期待）
+    if len(data) != 27:
+        logger.warning(f"Unexpected data length: {len(data)} bytes (expected 27)")
+        return
+    
+    try:
+        # 現在のタイムスタンプを記録
+        timestamp = datetime.datetime.now()
         
-        # 製造者データの内容をログ
-        for company_id, data in manufacturer_data.items():
-            # データ長のチェック（PicoTestデータは27バイト）
-            if len(data) != 27:
-                continue
-                
+        # パケットIDを取得（3バイト目）
+        packet_id = data[PACKET_ID_INDEX]
+        
+        # 時間差情報（最後の2バイト）
+        time_diff_1 = data[TIMEDIFF_INDEX_1] * 4 if data[TIMEDIFF_INDEX_1] != 0xFF else 0
+        time_diff_2 = data[TIMEDIFF_INDEX_2] * 4 if data[TIMEDIFF_INDEX_2] != 0xFF else 0
+        
+        # タイムスタンプの計算
+        data3_time = timestamp
+        data2_time = timestamp - datetime.timedelta(milliseconds=time_diff_2) if time_diff_2 > 0 else timestamp
+        data1_time = data2_time - datetime.timedelta(milliseconds=time_diff_1) if time_diff_1 > 0 else data2_time
+        
+        # 時間の逆転を防止
+        if data1_time > data2_time:
+            data1_time = data2_time
+        if data2_time > data3_time:
+            data2_time = data3_time
+        
+        # タイムスタンプの配列
+        data_timestamps = [data1_time, data2_time, data3_time]
+        
+        # 各データエントリを解析
+        entries = []
+        
+        # 3つのデータエントリを解析（4バイト目以降のデータ）
+        for i in range(MAX_DATA_ENTRIES):
+            offset = DATA_START_INDEX + (i * BYTES_PER_RECORD)
+            
+            # データ範囲のチェック
+            if offset + BYTES_PER_RECORD > len(data) - 2:
+                break
+            
             try:
-                # 現在のタイムスタンプを記録
-                timestamp = datetime.datetime.now()
+                # センサーデータの解析
+                pressure = int.from_bytes(data[offset:offset+2], 'little', signed=True) / 10
+                accel_x = int.from_bytes(data[offset+2:offset+4], 'little', signed=True) / 10000
+                accel_y = int.from_bytes(data[offset+4:offset+6], 'little', signed=True) / 10000
+                accel_z = int.from_bytes(data[offset+6:offset+8], 'little', signed=True) / 10000
                 
-                # パケットIDを取得（3バイト目）
-                packet_id = data[PACKET_ID_INDEX]
+                # 有効なデータのみを追加
+                if is_valid_data(pressure, accel_x, accel_y, accel_z):
+                    entries.append((data_timestamps[i], packet_id, pressure, accel_x, accel_y, accel_z))
+            except Exception:
+                pass
+        
+        # データがあれば重複を排除して処理
+        if entries:
+            # 新しいデータを見つけたカウント
+            new_data_count = 0
+            
+            # 重複を排除して追加
+            for entry in entries:
+                entry_time, entry_id, pressure, accel_x, accel_y, accel_z = entry
                 
-                # 時間差情報（最後の2バイト）
-                time_diff_1 = data[TIMEDIFF_INDEX_1] * 4 if data[TIMEDIFF_INDEX_1] != 0xFF else 0
-                time_diff_2 = data[TIMEDIFF_INDEX_2] * 4 if data[TIMEDIFF_INDEX_2] != 0xFF else 0
+                # 一意のキーを作成
+                data_key = (entry_id, round(pressure, 1), round(accel_x, 3), round(accel_y, 3), round(accel_z, 3))
                 
-                # タイムスタンプの計算
-                data3_time = timestamp
-                data2_time = timestamp - datetime.timedelta(milliseconds=time_diff_2) if time_diff_2 > 0 else timestamp
-                data1_time = data2_time - datetime.timedelta(milliseconds=time_diff_1) if time_diff_1 > 0 else data2_time
-                
-                # 時間の逆転を防止
-                if data1_time > data2_time:
-                    data1_time = data2_time
-                if data2_time > data3_time:
-                    data2_time = data3_time
-                
-                # タイムスタンプの配列
-                data_timestamps = [data1_time, data2_time, data3_time]
-                
-                # 各データエントリを解析
-                entries = []
-                
-                # 3つのデータエントリを解析（3バイト目以降のデータ）
-                for i in range(MAX_DATA_ENTRIES):
-                    offset = DATA_START_INDEX + (i * BYTES_PER_RECORD)
-                    
-                    # データ範囲のチェック
-                    if offset + BYTES_PER_RECORD > len(data) - 2:
-                        break
-                    
-                    try:
-                        # センサーデータの解析
-                        pressure = int.from_bytes(data[offset:offset+2], 'little', signed=True) / 10
-                        accel_x = int.from_bytes(data[offset+2:offset+4], 'little', signed=True) / 10000
-                        accel_y = int.from_bytes(data[offset+4:offset+6], 'little', signed=True) / 10000
-                        accel_z = int.from_bytes(data[offset+6:offset+8], 'little', signed=True) / 10000
-                        
-                        # 有効なデータのみを追加
-                        if is_valid_data(pressure, accel_x, accel_y, accel_z):
-                            entries.append((data_timestamps[i], packet_id, pressure, accel_x, accel_y, accel_z))
-                    except Exception:
-                        pass
-                
-                # データがあれば重複を排除して処理
-                if entries:
-                    # 新しいデータを見つけたカウント
-                    new_data_count = 0
-                    
-                    # 重複を排除して追加
-                    for entry in entries:
-                        entry_time, entry_id, pressure, accel_x, accel_y, accel_z = entry
-                        
-                        # 一意のキーを作成
-                        data_key = (entry_id, round(pressure, 1), round(accel_x, 3), round(accel_y, 3), round(accel_z, 3))
-                        
-                        # 既に処理済みかチェック
-                        if data_key not in unique_data_buffer:
-                            # 新しいデータをバッファとキューに追加
-                            unique_data_buffer[data_key] = entry
-                            processed_data_queue.append(entry)
-                            new_data_count += 1
-                    
-                    # 処理済みキューからデータを保存
-                    if new_data_count > 0:
-                        save_processed_data()
-                
-            except Exception as e:
-                logger.error(f"Error processing data: {e}")
+                # 既に処理済みかチェック
+                if data_key not in unique_data_buffer:
+                    # 新しいデータをバッファとキューに追加
+                    unique_data_buffer[data_key] = entry
+                    processed_data_queue.append(entry)
+                    new_data_count += 1
+            
+            # 処理済みキューからデータを保存
+            if new_data_count > 0:
+                save_processed_data()
+        
+    except Exception as e:
+        logger.error(f"Error processing data: {e}")
 
 # 有効なデータかをチェック
 def is_valid_data(pressure, accel_x, accel_y, accel_z):
@@ -205,7 +208,7 @@ async def main():
         if SAVE_TO_CSV:
             init_csv()
         
-        logger.info(f"{DEVICE_NAME}スキャン中... Ctrl+Cで終了")
+        logger.info(f"製造者ID 0x{MANUFACTURER_ID:04x} のデバイスをスキャン中... Ctrl+Cで終了")
         
         # スキャナーの設定
         scanner = BleakScanner(detection_callback=detection_callback)
