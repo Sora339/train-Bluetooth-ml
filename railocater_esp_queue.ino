@@ -10,8 +10,8 @@
 // I2Cアドレスの定数
 #define PRESSURE_ADDRESS 0x48  // HSPPAD143C
 #define MPU6050_ADDRESS 0x68   // MPU-6050
-#define SDA_PIN 20             // ESP32のデフォルトSDA
-#define SCL_PIN 21             // ESP32のデフォルトSCL
+#define SDA_PIN 22             // ESP32のデフォルトSDA
+#define SCL_PIN 23             // ESP32のデフォルトSCL
 
 // HSPPAD143Cレジスタ
 #define PRESSURE_REG_RESET 0x11
@@ -139,28 +139,28 @@ void readAccel(float *x, float *y, float *z) {
 }
 
 // ジャイロセンサー読み取り
-void readGyro(float *x, float *y, float *z) {
-  Wire.beginTransmission(MPU6050_ADDRESS);
-  Wire.write(GYRO_XOUT_H);
-  if (Wire.endTransmission(false) != 0) {
-    *x = *y = *z = 0;
-    return;
-  }
+// void readGyro(float *x, float *y, float *z) {
+//   Wire.beginTransmission(MPU6050_ADDRESS);
+//   Wire.write(GYRO_XOUT_H);
+//   if (Wire.endTransmission(false) != 0) {
+//     *x = *y = *z = 0;
+//     return;
+//   }
 
-  Wire.requestFrom(MPU6050_ADDRESS, 6);
-  if (Wire.available() < 6) {
-    *x = *y = *z = 0;
-    return;
-  }
+//   Wire.requestFrom(MPU6050_ADDRESS, 6);
+//   if (Wire.available() < 6) {
+//     *x = *y = *z = 0;
+//     return;
+//   }
 
-  int16_t xRaw = (Wire.read() << 8) | Wire.read();
-  int16_t yRaw = (Wire.read() << 8) | Wire.read();
-  int16_t zRaw = (Wire.read() << 8) | Wire.read();
+//   int16_t xRaw = (Wire.read() << 8) | Wire.read();
+//   int16_t yRaw = (Wire.read() << 8) | Wire.read();
+//   int16_t zRaw = (Wire.read() << 8) | Wire.read();
 
-  *x = xRaw / 131.0;
-  *y = yRaw / 131.0;
-  *z = zRaw / 131.0;
-}
+//   *x = xRaw / 131.0;
+//   *y = yRaw / 131.0;
+//   *z = zRaw / 131.0;
+// }
 
 // バイト配列を16進数文字列に変換（デバッグ表示用）
 void dumpHex(uint8_t *data, size_t len) {
@@ -188,12 +188,12 @@ void setupBLE() {
   pService->start();
   pAdvertising = BLEDevice::getAdvertising();
   pAdvertising->addServiceUUID(SERVICE_UUID);
-  pAdvertising->setScanResponse(true);  // スキャン応答を有効化
+  pAdvertising->setScanResponse(false);  // スキャン応答は無効
   pAdvertising->setMinPreferred(0x06);  // モバイルデバイス用の設定
 
   // 特に重要：アドバタイズの設定
-  pAdvertising->setMinInterval(40);  // 最小アドバタイズ間隔（25ms × 0.625ms = 25ms）
-  pAdvertising->setMaxInterval(60);  // 最大アドバタイズ間隔（40ms × 0.625ms = 25ms）
+  pAdvertising->setMinInterval(40);  // 最小アドバタイズ間隔
+  pAdvertising->setMaxInterval(40);  // 最大アドバタイズ間隔
 
   // 製造者IDを設定
   BLEAdvertisementData scanResponseData;
@@ -251,31 +251,31 @@ void updateAdvertisingData() {
     dataCount++;
   }
 
-  // データが2つ以上ある場合、時間差を計算
-  if (dataCount >= 2) {
-    timeDiff1 = dataEntries[1].timestamp - dataEntries[0].timestamp;
-    // デバッグ表示
-    if (debugMode) {
-      Serial.print("Time diff 1-2: ");
-      Serial.print(timeDiff1);
-      Serial.println(" ms");
-    }
-    // ミリ秒単位の時間差を255以下に収める（単位はms/4）
-    timeDiff1 = min(timeDiff1 / 4, 255UL);
-  }
+  // // データが2つ以上ある場合、時間差を計算
+  // if (dataCount >= 2) {
+  //   timeDiff1 = dataEntries[1].timestamp - dataEntries[0].timestamp;
+  //   // デバッグ表示
+  //   if (debugMode) {
+  //     Serial.print("Time diff 1-2: ");
+  //     Serial.print(timeDiff1);
+  //     Serial.println(" ms");
+  //   }
+  //   // ミリ秒単位の時間差を255以下に収める（単位はms/4）
+  //   timeDiff1 = min(timeDiff1 / 4, 255UL);
+  // }
 
-  // データが3つある場合、2つ目の時間差も計算
-  if (dataCount >= 3) {
-    timeDiff2 = dataEntries[2].timestamp - dataEntries[1].timestamp;
-    // デバッグ表示
-    if (debugMode) {
-      Serial.print("Time diff 2-3: ");
-      Serial.print(timeDiff2);
-      Serial.println(" ms");
-    }
-    // ミリ秒単位の時間差を255以下に収める（単位はms/4）
-    timeDiff2 = min(timeDiff2 / 4, 255UL);
-  }
+  // // データが3つある場合、2つ目の時間差も計算
+  // if (dataCount >= 3) {
+  //   timeDiff2 = dataEntries[2].timestamp - dataEntries[1].timestamp;
+  //   // デバッグ表示
+  //   if (debugMode) {
+  //     Serial.print("Time diff 2-3: ");
+  //     Serial.print(timeDiff2);
+  //     Serial.println(" ms");
+  //   }
+  //   // ミリ秒単位の時間差を255以下に収める（単位はms/4）
+  //   timeDiff2 = min(timeDiff2 / 4, 255UL);
+  // }
 
   // データを製造者データにパック
   for (int i = 0; i < min(dataCount, 3); i++) {
@@ -307,8 +307,8 @@ void updateAdvertisingData() {
   manufacturerData[1] = (MANUFACTURER_ID >> 8) & 0xFF;
 
   // 時間差情報を追加（最後の2バイト）
-  manufacturerData[27] = (uint8_t)timeDiff1;  // 1つ目と2つ目の時間差
-  manufacturerData[28] = (uint8_t)timeDiff2;  // 2つ目と3つ目の時間差
+  // manufacturerData[27] = (uint8_t)timeDiff1;  // 1つ目と2つ目の時間差
+  // manufacturerData[28] = (uint8_t)timeDiff2;  // 2つ目と3つ目の時間差
 
   // デバッグ出力
   if (debugMode) {
@@ -395,7 +395,7 @@ void loop() {
     // ここでセンサーデータを実際に読み取る
     newData.pressure = readPressureHPa();
     readAccel(&newData.ax, &newData.ay, &newData.az);
-    readGyro(&newData.gx, &newData.gy, &newData.gz);
+    // readGyro(&newData.gx, &newData.gy, &newData.gz);
 
     // キューに新しいデータを追加
     dataQueue.push(newData);
