@@ -3,7 +3,7 @@ import datetime
 import csv
 import os
 from bleak import BleakScanner
-from collections import deque
+from collections import deque, Counter
 import time
 import logging
 
@@ -12,16 +12,22 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 MANUFACTURER_ID = 0xCDCB
+RAICOLLECTOR_ID = 0
 CSV_FILENAME = f"{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}_sensor_data.csv"
 SAVE_TO_CSV = True
 csv_file = None
 csv_writer = None
 
+from collections import Counter
+received_ids_queue = deque(maxlen=100)
+last_raicollector_decision_time = time.time()
+
 data_count = 0
 last_status_time = time.time()
 
-PACKET_ID_INDEX = 0
-DATA_START_INDEX = 1
+RAICOLLECTOR_ID_INDEX = 0
+PACKET_ID_INDEX = 2
+DATA_START_INDEX = 3
 BYTES_PER_RECORD = 8
 MAX_DATA_ENTRIES = 3
 
@@ -39,8 +45,27 @@ def init_csv():
 def packet_id_distance(id1, id2):
     return min((id1 - id2) % 256, (id2 - id1) % 256)
 
+def select_best_raicollector_id():
+    """キューに貯まったIDの中で最も多いraicollector_idを選択"""
+    global RAICOLLECTOR_ID, received_ids_queue, last_raicollector_decision_time
+    
+    if not received_ids_queue:
+        return
+    
+    # 最も多いIDを選択
+    counter = Counter(received_ids_queue)
+    best_id, best_count = counter.most_common(1)[0]
+    
+    if RAICOLLECTOR_ID != best_id:
+        logger.info(f"RAICOLLECTOR_ID changed from {RAICOLLECTOR_ID} to {best_id} (count: {best_count}/{len(received_ids_queue)})")
+        RAICOLLECTOR_ID = best_id
+    else:
+        logger.info(f"RAICOLLECTOR_ID remains {RAICOLLECTOR_ID} (count: {best_count}/{len(received_ids_queue)})")
+    
+    last_raicollector_decision_time = time.time()
+
 def detection_callback(device, advertisement_data):
-    global unique_data_buffer, processed_data_queue
+    global unique_data_buffer, processed_data_queue, RAICOLLECTOR_ID, received_ids_queue
 
     manufacturer_data = advertisement_data.manufacturer_data
     if not manufacturer_data:
@@ -56,60 +81,84 @@ def detection_callback(device, advertisement_data):
 
     try:
         timestamp = datetime.datetime.now()
+        raicollector_id = int.from_bytes(data[RAICOLLECTOR_ID_INDEX:RAICOLLECTOR_ID_INDEX+2], 'little', signed=False)
+        now = time.time()
+
+        # raicollector_idをキューに追加
+        received_ids_queue.append(raicollector_id)
+
+        # 初期化（最初の受信時のみ）
+        if RAICOLLECTOR_ID == 0:
+            RAICOLLECTOR_ID = raicollector_id
+            logger.info(f"RAICOLLECTOR_ID initially set to {RAICOLLECTOR_ID}")
+            
         packet_id = data[PACKET_ID_INDEX]
         time_diff_1 = 100
         time_diff_2 = 100
 
-        data3_time = timestamp
-        data2_time = timestamp - datetime.timedelta(milliseconds=time_diff_2)
-        data1_time = data2_time - datetime.timedelta(milliseconds=time_diff_1)
+        if raicollector_id == RAICOLLECTOR_ID:
+            data3_time = timestamp
+            data2_time = timestamp - datetime.timedelta(milliseconds=time_diff_2)
+            data1_time = data2_time - datetime.timedelta(milliseconds=time_diff_1)
 
-        if data1_time > data2_time:
-            data1_time = data2_time
-        if data2_time > data3_time:
-            data2_time = data3_time
+            if data1_time > data2_time:
+                data1_time = data2_time
+            if data2_time > data3_time:
+                data2_time = data3_time
 
-        data_timestamps = [data1_time, data2_time, data3_time]
-        entries = []
+            data_timestamps = [data1_time, data2_time, data3_time]
+            entries = []
 
-        for i in range(MAX_DATA_ENTRIES):
-            offset = DATA_START_INDEX + (i * BYTES_PER_RECORD)
-            if offset + BYTES_PER_RECORD > len(data) - 2:
-                break
+            for i in range(MAX_DATA_ENTRIES):
+                offset = DATA_START_INDEX + (i * BYTES_PER_RECORD)
+                if offset + BYTES_PER_RECORD > len(data) - 2:
+                    break
 
-            try:
-                pressure = int.from_bytes(data[offset:offset+2], 'little', signed=True) / 10
-                accel_x = int.from_bytes(data[offset+2:offset+4], 'little', signed=True) / 10000
-                accel_y = int.from_bytes(data[offset+4:offset+6], 'little', signed=True) / 10000
-                accel_z = int.from_bytes(data[offset+6:offset+8], 'little', signed=True) / 10000
+                try:
+                    pressure = int.from_bytes(data[offset:offset+2], 'little', signed=True) / 10
+                    accel_x = int.from_bytes(data[offset+2:offset+4], 'little', signed=True) / 10000
+                    accel_y = int.from_bytes(data[offset+4:offset+6], 'little', signed=True) / 10000
+                    accel_z = int.from_bytes(data[offset+6:offset+8], 'little', signed=True) / 10000
 
-                if is_valid_data(pressure, accel_x, accel_y, accel_z):
-                    entries.append((data_timestamps[i], packet_id, pressure, accel_x, accel_y, accel_z))
-            except Exception:
-                pass
+                    if is_valid_data(pressure, accel_x, accel_y, accel_z):
+                        entries.append((data_timestamps[i], packet_id, pressure, accel_x, accel_y, accel_z))
+                except Exception:
+                    pass
 
-        if entries:
-            new_data_count = 0
+            if entries:
+                new_data_count = 0
 
-            for entry in entries:
-                entry_time, entry_id, pressure, accel_x, accel_y, accel_z = entry
-                data_key = (round(pressure, 1), round(accel_x, 3), round(accel_y, 3), round(accel_z, 3))
+                for entry in entries:
+                    entry_time, entry_id, pressure, accel_x, accel_y, accel_z = entry
+                    data_key = (round(pressure, 1), round(accel_x, 3), round(accel_y, 3), round(accel_z, 3))
 
-                if data_key in unique_data_buffer:
-                    existing_entry = unique_data_buffer[data_key]
-                    existing_packet_id = existing_entry[1]
-                    if packet_id_distance(entry_id, existing_packet_id) <= 2:
-                        continue  # skip duplicate
+                    if data_key in unique_data_buffer:
+                        existing_entry = unique_data_buffer[data_key]
+                        existing_packet_id = existing_entry[1]
+                        if packet_id_distance(entry_id, existing_packet_id) <= 2:
+                            continue  # skip duplicate
 
-                unique_data_buffer[data_key] = entry
-                processed_data_queue.append(entry)
-                new_data_count += 1
+                    unique_data_buffer[data_key] = entry
+                    processed_data_queue.append(entry)
+                    new_data_count += 1
 
-            if new_data_count > 0:
-                save_processed_data()
+                if new_data_count > 0:
+                    save_processed_data()
 
     except Exception as e:
         logger.error(f"Error processing data: {e}")
+        
+async def monitor_raicollector_selection():
+    """5秒ごとにRAICOLLECTOR_IDの選択を行う"""
+    global last_raicollector_decision_time
+    
+    while True:
+        await asyncio.sleep(1)
+        current_time = time.time()
+        
+        # 5秒経過したら最適なRAICOLLECTOR_IDを選択
+        if current_time - last_raicollector_decision_time >= 5.0:
+            select_best_raicollector_id()
 
 def is_valid_data(pressure, accel_x, accel_y, accel_z):
     return not (
@@ -161,6 +210,7 @@ async def main():
         logger.info(f"製造者ID 0x{MANUFACTURER_ID:04x} のデバイスをスキャン中... Ctrl+Cで終了")
 
         scanner = BleakScanner(detection_callback=detection_callback)
+        selection_task = asyncio.create_task(monitor_raicollector_selection())
         processing_task = asyncio.create_task(process_data())
         await scanner.start()
         logger.info("スキャン開始しました")

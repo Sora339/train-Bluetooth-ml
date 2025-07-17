@@ -27,11 +27,14 @@
 #define SERVICE_UUID "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
 #define CHARACTERISTIC_UUID "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
 
-// 製造者ID (実際に使われているID)
+// 製造者ID (Railcollectorを識別するID)
 #define MANUFACTURER_ID 0xCDCB  // 製造者ID (52651)
 
+// 個体ID (Raicollector同士を識別するID) 干渉テスト時にここを別々にしたものを使う
+#define RAICOLLECTOR_ID 0xABCD  // 個体ID (43981)
+
 // 送信設定
-#define SEND_INTERVAL 100          // 10Hz = 100ms
+#define SEND_INTERVAL 100          // 10Hz = 100ms ここは現在は値を書き換える頻度
 #define DATA_REPEAT_COUNT 3        // 各データを3回送信
 #define MANUFACTURER_DATA_SIZE 29  // 拡張したデータサイズ
 
@@ -232,13 +235,13 @@ void updateAdvertisingData() {
   // 29バイトの製造者データを作成
   uint8_t manufacturerData[MANUFACTURER_DATA_SIZE] = { 0 };
 
-  // パケットIDを3バイト目に設定（最初の2バイトはパディングで使用できない）
-  manufacturerData[2] = packetId;
+  // パケットIDを5バイト目に設定
+  manufacturerData[4] = packetId;
 
   // データ部分を埋める（最大3つのデータを格納）
   int dataCount = 0;            // 格納したデータの数
-  unsigned long timeDiff1 = 0;  // 1つ目と2つ目のデータの時間差
-  unsigned long timeDiff2 = 0;  // 2つ目と3つ目のデータの時間差
+  // unsigned long timeDiff1 = 0;  // 1つ目と2つ目のデータの時間差
+  // unsigned long timeDiff2 = 0;  // 2つ目と3つ目のデータの時間差
 
   // キューの内容をコピーして、キュー自体を変更しないようにする
   std::queue<sensor_data_t> tempQueue = dataQueue;
@@ -287,8 +290,8 @@ void updateAdvertisingData() {
     int16_t accelY = (int16_t)(data.ay * 10000);
     int16_t accelZ = (int16_t)(data.az * 10000);
 
-    // 各データを製造者データにパック（3バイト目以降に配置）
-    int offset = 3 + (i * 8);  // 各データは8バイト
+    // 各データを製造者データにパック（6バイト目以降に配置）
+    int offset = 5 + (i * 8);  // 各データは8バイト
 
     manufacturerData[offset + 0] = pressureData & 0xFF;
     manufacturerData[offset + 1] = (pressureData >> 8) & 0xFF;
@@ -305,6 +308,9 @@ void updateAdvertisingData() {
 
   manufacturerData[0] = MANUFACTURER_ID & 0xFF;
   manufacturerData[1] = (MANUFACTURER_ID >> 8) & 0xFF;
+
+  manufacturerData[2] = RAICOLLECTOR_ID & 0xFF;
+  manufacturerData[3] = (RAICOLLECTOR_ID >> 8) & 0xFF;
 
   // 時間差情報を追加（最後の2バイト）
   // manufacturerData[27] = (uint8_t)timeDiff1;  // 1つ目と2つ目の時間差
@@ -340,9 +346,9 @@ void updateAdvertisingData() {
   Serial.print(" with ");
   Serial.print(dataCount);
   Serial.print(" data entries. Time diffs: ");
-  Serial.print(timeDiff1 * 4);  // 元の単位に戻す
+  // Serial.print(timeDiff1 * 4);  // 元の単位に戻す
   Serial.print("ms, ");
-  Serial.print(timeDiff2 * 4);  // 元の単位に戻す
+  // Serial.print(timeDiff2 * 4);  // 元の単位に戻す
   Serial.println("ms");
 }
 
